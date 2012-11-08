@@ -8,50 +8,86 @@ from ola.ClientWrapper import ClientWrapper
 PIXEL_SIZE = 3
 WHITE = [255,255,255] 
 BLACK = [0,0,0] 
+DMX_MAX = 255
+PCA9685_MAX = 4095
 
-class Fixture:
+class pca9685:
     def __init__(self, name):
         self.name = name
-        self.type = None
-        self.dmx_universe = None
-        self.dmx_channel = None
-        self.leds_per_channel = None
-        self.num_leds = None
-        self.num_channels = None
-        self.data_handler = self.default_handler
-
+        self.type = 'pca9685_pwm'
+        self.channel_config = []
+        self.i2c_address = None
+        self.dmx_channel_start = None
+        self.dmx_channel_end = None
+        self.handler = self.default_handler
     def __str__(self):
         ret = "\nName: %s\n" %  self.name 
         ret += "Type: %s\n" % self.type
-        ret += "DMX Universe: %d\n" % self.dmx_universe 
-        if (self.type == 'rgb_pixel'):
-            ret += "DMX Channel (start): %d\n" % self.dmx_channel
-            ret += "DMX Channel (end): %d\n" % (self.dmx_channel + self.num_channels)
-            ret += "Num Leds: %d\n" % self.num_leds
-            ret += "Leds per channel: %d\n" % self.leds_per_channel
-        if (self.type == 'rgb_pixel_chase') or (self.type == 'rgb_pixel_chase_fill'):
-            ret += "DMX Channel: %d\n" % self.dmx_channel
-            ret += "Num Leds: %d\n" % self.num_leds
-        if (self.type == 'pca9685'):
-            ret += "DMX Channel (start): %d\n" % self.dmx_channel
-            ret += "DMX Channel (end): %d\n" % (self.dmx_channel + self.num_channels)
+        ret += "I2C Address: %s\n" % self.i2c_address
+        ret += "DMX Channel Start: %d\n" % self.dmx_channel_start
+        ret += "DMX Channel End: %d\n" % self.dmx_channel_end
+        for channel_num, channel_type in enumerate(self.channel_config):
+            ret += "PWM Channel %d: " % channel_num
+            ret += "Type: %s \n" % channel_type
         return ret
 
     def default_handler(self,data):
         print name, " Using default handler"
         print "Data:", data
 
+    def default_handler(self,data):
+        for channel_num, channel_type in enumerate(self.channel_config):
+            if controller.verbose:
+                print "Channel:", channel_num, "Value: ", data[dmx_channel+channel_num]
+            if channel_type == 'dimmer':
+                pwm.setPWM(channel_num, 0, data[dmx_channel+chanel_num]*PCA9685_MAX/DMX_MAX)
+            if channel_type == 'servo':
+                # position is in 0-255 range
+                # 0degree position = 150; max degree position = 450
+                servo_max_delta = self.servo_max - self.servo_min
+                value = self.servo.min  + position * (servo_max_delta / DMX_MAX)
+                pwm.setPWM(self.pca9685_channel, 0, value)
+
+class RGB_Pixel_Fixture:
+    def __init__(self, name):
+        self.name = name
+        self.mode = None
+        self.type ='rgb_pixel'
+        self.spidev = file('/dev/spidev0.0', "wb")
+        self.dmx_channel_start = None
+        self.dmx_channel_end = None
+        self.leds_per_channel = None
+        self.num_leds = None
+        self.handler = self.default_handler
+        self.gamma = bytearray(256)
+        self.chip_type = None
+
+    def __str__(self):
+        ret = "\nName: %s\n" %  self.name 
+        ret += "Type: %s\n" % self.type
+        ret += "Mode: %s\n" % self.mode
+        ret += "DMX Channel (start): %d\n" % self.dmx_channel_start
+        ret += "DMX Channel (end): %d\n" % self.dmx_channel_end
+        ret += "Num Leds: %d\n" % self.num_leds
+        ret += "Leds per channel: %d\n" % self.leds_per_channel
+        return ret
+
+    def default_handler(self,data):
+        print self.name, " Using default handler"
+        print "Data:", data
+
     def rgb_pixel_handler(self, dmx_data):
         data  = []
-        group_size = self.num_leds / self.num_channels
-        for group in range(self.num_channels):
+        num_channels = self.dmx_channel_end - self.dmx_channel_start
+        group_size = self.num_leds / num_channels
+        for group in range(num_channels):
             for pixel in range(group_size):
                 data.append(dmx_data[(group*PIXEL_SIZE):(group*PIXEL_SIZE)+PIXEL_SIZE])
-        controller.send(data)
+        self.send_spi(data)
 
     def rgb_pixel_chase_handler(self, dmx_data):
         data  = []
-        position = dmx_data[self.dmx_channel]*self.num_leds/255
+        position = dmx_data[self.dmx_channel_start]*self.num_leds/255
         if controller.verbose:
             print position
         for i in range(position - 1):
@@ -59,32 +95,51 @@ class Fixture:
         data.append(WHITE)
         for i in range(self.num_leds - position):
             data.append(BLACK)
-        controller.send(data)
+        controller.send_spi(data)
 
     def rgb_pixel_chase_fill_handler(self, dmx_data):
         data  = []
-        position = dmx_data[self.dmx_channel]*self.num_leds/255
+        position = dmx_data[self.dmx_channel_start]*self.num_leds/255
         if controller.verbose:
             print position
         for i in range(position):
             data.append(WHITE)
         for i in range(self.num_leds - position):
             data.append(BLACK)
-        controller.send(data)
+        controller.send_spi(data)
+    
+    def calculateGamma(self):
+        # Calculate gamma correction table. This includes
+        # LPD8806-specific conversion (7-bit color w/high bit set).
+        if self.chip_type == "LPD8806":
+            for i in range(256):
+                self.gamma[i] = 0x80 | int(pow(float(i) / 255.0, 2.5) * 127.0 + 0.5)
+        if self.chip_type == "WS2801":
+            for i in range(256):
+                self.gamma[i] = int(pow(float(i) / 255.0, 2.5) * 255.0 )
+        # LPD6803 has 5 bit color, this seems to work but is not exact.
+        if self.chip_type == "LPD6803":
+            for i in range(256):
+                self.gamma[i] = int(pow(float(i) / 255.0, 2.0) * 255.0 + 0.5)
 
-class RaspberryDmx:
-    def __init__(self):
-        self.spidev = file('/dev/spidev0.0', "wb")
-        self.gamma = bytearray(256)
-        self.pixel_string_bus = None
-        self.pixel_string_chip = None
-        self.pixel_string_num_leds = None
-        self.fixture_list = []
-        self.verbose = False
-        self.cmd = None
-        self.num_leds = 50
-        self.universe_list = []
-        self.chip_type = 'WS2801'
+    # Apply Gamma Correction and RGB / GRB reordering
+    # Optionally perform brightness adjustment
+    def filter_pixel(self, input_pixel, brightness):
+        input_pixel[0] = int(brightness * input_pixel[0])
+        input_pixel[1] = int(brightness * input_pixel[1])
+        input_pixel[2] = int(brightness * input_pixel[2])
+        output_pixel = bytearray(PIXEL_SIZE)
+        if self.chip_type == "LPD8806":
+            # Convert RGB into GRB bytearray list.
+            output_pixel[0] = self.gamma[input_pixel[1]]
+            output_pixel[1] = self.gamma[input_pixel[0]]
+            output_pixel[2] = self.gamma[input_pixel[2]]
+        else:
+            output_pixel[0] = self.gamma[input_pixel[0]]
+            output_pixel[1] = self.gamma[input_pixel[1]]
+            output_pixel[2] = self.gamma[input_pixel[2]]
+        return output_pixel
+            
 
     def getBytes(self, data):
         result = bytearray(len(data)* PIXEL_SIZE)
@@ -96,8 +151,8 @@ class RaspberryDmx:
             j = j + 3
         return result
 
-    def send(self, data):
-        if self.verbose:
+    def send_spi(self, data):
+        if controller.verbose:
             print "sending ",data
         bytedata = self.getBytes(data)
         pixels_in_buffer = len(data) / PIXEL_SIZE
@@ -122,88 +177,64 @@ class RaspberryDmx:
             self.spidev.write(pixels)
         self.spidev.flush()
 
-    # Apply Gamma Correction and RGB / GRB reordering
-    # Optionally perform brightness adjustment
-    def filter_pixel(self, input_pixel, brightness):
-        input_pixel[0] = int(brightness * input_pixel[0])
-        input_pixel[1] = int(brightness * input_pixel[1])
-        input_pixel[2] = int(brightness * input_pixel[2])
-        output_pixel = bytearray(PIXEL_SIZE)
-        if self.chip_type == "LPD8806":
-            # Convert RGB into GRB bytearray list.
-            output_pixel[0] = self.gamma[input_pixel[1]]
-            output_pixel[1] = self.gamma[input_pixel[0]]
-            output_pixel[2] = self.gamma[input_pixel[2]]
-        else:
-            output_pixel[0] = self.gamma[input_pixel[0]]
-            output_pixel[1] = self.gamma[input_pixel[1]]
-            output_pixel[2] = self.gamma[input_pixel[2]]
-        return output_pixel
-            
+class lightingPi:
+    def __init__(self):
+        self.dmx_universe = None
+        self.fixture_list = []
+        self.verbose = False
+
+    def data_handler(self, dmx_data):
+        data  = []
+        for fixture in self.fixture_list:
+            fixture.handler(dmx_data)
+
 
     def parseConfigFile(self, configFile):
         config = SafeConfigParser()
         config.read(configFile)
-        self.pca9685_i2c_addr = config.get('hw_config', 'pca9685_i2c_address')
-        self.pixel_string_bus = config.get('hw_config', 'pixel_string_bus')
-        self.pixel_string_chip =  config.get('hw_config', 'pixel_string_chip')
-        self.pixel_string_num_leds  = config.getint('hw_config', 'pixel_string_num_leds')
-        parsed_fixture_list = config.get('fixture_list', 'fixture_list').split(',')
+        self.dmx_universe = config.getint('general_config', 'dmx_universe')
+        parsed_fixture_list = config.get('general_config', 'fixture_list').split(',')
 
-        print "HW Config: "
-        print "SPI bus:        ", self.pixel_string_bus
-        print "Pixel Type:     ", self.pixel_string_chip
-        print "Number of LEDs: ", self.pixel_string_num_leds
+        print "General Config: "
+        print "Universe: ", self.dmx_universe
         for fixture_name in parsed_fixture_list:
-            new_fixture = Fixture(fixture_name)
-            new_fixture.type = config.get(new_fixture.name, 'type')
-            new_fixture.dmx_universe = config.getint(new_fixture.name, 'dmx_universe')
-            new_fixture.dmx_channel = config.getint(new_fixture.name, 'dmx_channel')
-            if new_fixture.type == 'rgb_pixel':
-                new_fixture.leds_per_channel = config.getint(new_fixture.name, 'leds_per_channel')
-                new_fixture.num_leds = config.getint(new_fixture.name, 'num_leds')
-                new_fixture.data_handler = new_fixture.rgb_pixel_handler
-                new_fixture.num_channels = new_fixture.dmx_channel + new_fixture.num_leds/new_fixture.leds_per_channel
-            if new_fixture.type == 'rgb_pixel_chase':
-                new_fixture.num_leds = config.getint(new_fixture.name, 'num_leds')
-                new_fixture.data_handler = new_fixture.rgb_pixel_chase_handler
-                new_fixture.num_channels = 1
-            if new_fixture.type == 'rgb_pixel_chase_fill':
-                new_fixture.num_leds = config.getint(new_fixture.name, 'num_leds')
-                new_fixture.data_handler = new_fixture.rgb_pixel_chase_fill_handler
-                new_fixture.num_channels = 1
-            if new_fixture.type == 'pca9685':
-                new_fixture.num_channels = config.getint(new_fixture.name, 'num_channels')
-                #new_fixture.data_handler = new_fixture.rgb_pixel_chase_fill_handler
-            #check if this universe already exists for a fixture
-            new_universe = True
-            if not any(universe == new_fixture.dmx_universe for universe in self.universe_list):
-                self.universe_list.append(new_fixture.dmx_universe)
+            type = config.get(fixture_name, 'type')
+            if type == 'rgb_pixel':
+                new_fixture = RGB_Pixel_Fixture(fixture_name)
+                new_fixture.mode = config.get(fixture_name, 'mode')
+                new_fixture.spi_bus = config.get(fixture_name, 'spi_bus')
+                new_fixture.chip_type =  config.get(fixture_name, 'chip_type')
+                new_fixture.leds_per_channel = config.getint(fixture_name, 'leds_per_channel')
+                new_fixture.num_leds = config.getint(fixture_name, 'num_leds')
+                new_fixture.dmx_channel_start = config.getint(fixture_name, 'dmx_channel_start')
+                new_fixture.dmx_channel_end = config.getint(fixture_name, 'dmx_channel_end')
+                if new_fixture.mode == 'dimmer':
+                    new_fixture.handler = new_fixture.rgb_pixel_handler
+                if new_fixture.mode == 'chase':
+                    new_fixture.handler = new_fixture.rgb_pixel_chase_handler
+                if new_fixture.mode == 'chase':
+                    new_fixture.handler = new_fixture.rgb_pixel_chase_fill_handler
+                new_fixture.calculateGamma()
+            if type == 'pca9685':
+                new_fixture = pca9685(fixture_name)
+                new_fixture.i2c_address = config.get(fixture_name, 'i2c_address')
+                new_fixture.dmx_channel_start = config.getint(fixture_name, 'dmx_channel_start')
+                new_fixture.dmx_channel_end = config.getint(fixture_name, 'dmx_channel_end')
+                new_fixture.num_channels = config.getint(fixture_name, 'num_channels')
+                for pca9685_channel in range(new_fixture.num_channels):
+                    type = config.get(fixture_name, 'channel_%d'%pca9685_channel)
+                    new_fixture.channel_config.append(type)
+
             self.fixture_list.append(new_fixture)
         print "Configured Fixtures: "
         for fixture in self.fixture_list:
             print fixture
     
-    def calculateGamma(self):
-        # Calculate gamma correction table. This includes
-        # LPD8806-specific conversion (7-bit color w/high bit set).
-        if self.chip_type == "LPD8806":
-            for i in range(256):
-                self.gamma[i] = 0x80 | int(pow(float(i) / 255.0, 2.5) * 127.0 + 0.5)
-        if self.chip_type == "WS2801":
-            for i in range(256):
-                self.gamma[i] = int(pow(float(i) / 255.0, 2.5) * 255.0 )
-        # LPD6803 has 5 bit color, this seems to work but is not exact.
-        if self.chip_type == "LPD6803":
-            for i in range(256):
-                self.gamma[i] = int(pow(float(i) / 255.0, 2.0) * 255.0 + 0.5)
-    
 
     def run(self):
         wrapper = ClientWrapper()
         client = wrapper.Client()
-        for fixture in self.fixture_list:
-            client.RegisterUniverse(fixture.dmx_universe, client.REGISTER, fixture.data_handler)
+        client.RegisterUniverse(self.dmx_universe, client.REGISTER, self.data_handler)
         wrapper.Run()
 
 # ==================================================================================================
@@ -217,9 +248,8 @@ def defineCliArguments(controller):
     controller.verbose = args.verbose
 
 if __name__ == '__main__':
-    controller = RaspberryDmx()
+    controller = lightingPi()
     controller.parseConfigFile('config.ini')
-    controller.calculateGamma()
     defineCliArguments(controller)
     controller.run()
 
