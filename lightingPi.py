@@ -4,6 +4,7 @@ import getopt
 import textwrap
 import sys
 from ola.ClientWrapper import ClientWrapper
+from Adafruit_PWM_Servo_Driver import PWM
 
 PIXEL_SIZE = 3
 WHITE = [255,255,255] 
@@ -20,6 +21,10 @@ class pca9685:
         self.dmx_channel_start = None
         self.dmx_channel_end = None
         self.handler = self.default_handler
+        self.servo_min = 150  # Min pulse length out of 4096
+        self.servo_max = 600  # Max pulse length out of 4096
+        self.pwm = PWM(0x40, debug=True)
+        self.pwm.setPWMFreq(60) # Set frequency to 60 Hz
     def __str__(self):
         ret = "\nName: %s\n" %  self.name 
         ret += "Type: %s\n" % self.type
@@ -36,17 +41,22 @@ class pca9685:
         print "Data:", data
 
     def default_handler(self,data):
+        print self.name, " Using hardware handler"
         for channel_num, channel_type in enumerate(self.channel_config):
-            if controller.verbose:
-                print "Channel:", channel_num, "Value: ", data[dmx_channel+channel_num]
-            if channel_type == 'dimmer':
-                pwm.setPWM(channel_num, 0, data[dmx_channel+chanel_num]*PCA9685_MAX/DMX_MAX)
-            if channel_type == 'servo':
+            if channel_type == 'Dimmer':
+                if controller.verbose:
+                    print "Channel:", channel_num, "Channel Type: ", channel_type,  "Value: ", data[self.dmx_channel_start+channel_num]
+                self.pwm.setPWM(channel_num, 0, data[self.dmx_channel_start+channel_num]*PCA9685_MAX/DMX_MAX)
+            if channel_type == 'Servo':
+                if controller.verbose:
+                    print "Channel:", channel_num, "Channel Type: ", channel_type,  "Value: ", data[self.dmx_channel_start+channel_num]
                 # position is in 0-255 range
                 # 0degree position = 150; max degree position = 450
                 servo_max_delta = self.servo_max - self.servo_min
-                value = self.servo.min  + position * (servo_max_delta / DMX_MAX)
-                pwm.setPWM(self.pca9685_channel, 0, value)
+                value = self.servo_min  + data[self.dmx_channel_start+channel_num] * (servo_max_delta / DMX_MAX)
+                if controller.verbose:
+                    print "Channel:", channel_num, "Channel Type: ", channel_type,  "Value: ", value
+                self.pwm.setPWM(channel_num, 0, value)
 
 class RGB_Pixel_Fixture:
     def __init__(self, name):
