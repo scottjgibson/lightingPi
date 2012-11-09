@@ -79,7 +79,8 @@ class RGB_Pixel_Fixture:
         ret += "DMX Channel (start): %d\n" % self.dmx_channel_start
         ret += "DMX Channel (end): %d\n" % self.dmx_channel_end
         ret += "Num Leds: %d\n" % self.num_leds
-        ret += "Leds per channel: %d\n" % self.leds_per_channel
+        if self.type == 'rbg_pixel':
+            ret += "Leds per channel: %d\n" % self.leds_per_channel
         return ret
 
     def default_handler(self,data):
@@ -105,7 +106,7 @@ class RGB_Pixel_Fixture:
         data.append(WHITE)
         for i in range(self.num_leds - position):
             data.append(BLACK)
-        controller.send_spi(data)
+        self.send_spi(data)
 
     def rgb_pixel_chase_fill_handler(self, dmx_data):
         data  = []
@@ -116,7 +117,7 @@ class RGB_Pixel_Fixture:
             data.append(WHITE)
         for i in range(self.num_leds - position):
             data.append(BLACK)
-        controller.send_spi(data)
+        self.send_spi(data)
     
     def calculateGamma(self):
         # Calculate gamma correction table. This includes
@@ -165,7 +166,7 @@ class RGB_Pixel_Fixture:
         if controller.verbose:
             print "sending ",data
         bytedata = self.getBytes(data)
-        pixels_in_buffer = len(data) / PIXEL_SIZE
+        pixels_in_buffer = len(data)
         pixels = bytearray(pixels_in_buffer * PIXEL_SIZE)
         for pixel_index in range(pixels_in_buffer):
             pixel_to_adjust = bytearray(bytedata[(pixel_index * PIXEL_SIZE):((pixel_index * PIXEL_SIZE) + PIXEL_SIZE)])
@@ -214,15 +215,15 @@ class lightingPi:
                 new_fixture.mode = config.get(fixture_name, 'mode')
                 new_fixture.spi_bus = config.get(fixture_name, 'spi_bus')
                 new_fixture.chip_type =  config.get(fixture_name, 'chip_type')
-                new_fixture.leds_per_channel = config.getint(fixture_name, 'leds_per_channel')
                 new_fixture.num_leds = config.getint(fixture_name, 'num_leds')
                 new_fixture.dmx_channel_start = config.getint(fixture_name, 'dmx_channel_start')
                 new_fixture.dmx_channel_end = config.getint(fixture_name, 'dmx_channel_end')
                 if new_fixture.mode == 'dimmer':
+                    new_fixture.leds_per_channel = config.getint(fixture_name, 'leds_per_channel')
                     new_fixture.handler = new_fixture.rgb_pixel_handler
                 if new_fixture.mode == 'chase':
                     new_fixture.handler = new_fixture.rgb_pixel_chase_handler
-                if new_fixture.mode == 'chase':
+                if new_fixture.mode == 'chase_fill':
                     new_fixture.handler = new_fixture.rgb_pixel_chase_fill_handler
                 new_fixture.calculateGamma()
             if type == 'pca9685':
