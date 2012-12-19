@@ -3,6 +3,7 @@ import argparse, socket, math
 import getopt
 import textwrap
 import sys
+import liblo
 from ola.ClientWrapper import ClientWrapper
 from Adafruit_PWM_Servo_Driver import PWM
 
@@ -11,6 +12,24 @@ WHITE = [255,255,255]
 BLACK = [0,0,0] 
 DMX_MAX = 255
 PCA9685_MAX = 4095
+
+def fallback(path, args, types, src):
+    print "got unknown message '%s' from '%s'" % (path, src.get_url())
+    for a, t in zip(args, types):
+        print "argument of type '%s': %s" % (t, a)
+
+class OscMap:
+    def __init__(self, name):
+        self.name = name
+        self.osc_path = None
+        self.format = None
+        self.mapping = None
+    def __str__(self):
+        ret = "\nName: %s\n" %  self.name 
+        ret += "Path: %s\n" % self.osc_path
+        ret += "Format String: %s\n" % self.format
+        ret += "DMX Channel Mapping: %s\n" % self.mapping
+        return ret
 
 class pca9685:
     def __init__(self, name):
@@ -40,22 +59,22 @@ class pca9685:
         print name, " Using default handler"
         print "Data:", data
 
-    def default_handler(self,data):
+    def pca9685_handler(self,data):
         print self.name, " Using hardware handler"
+        import pdb; pdb.set_trace()
         for channel_num, channel_type in enumerate(self.channel_config):
+            print channel_num
             if channel_type == 'Dimmer':
                 if controller.verbose:
                     print "Channel:", channel_num, "Channel Type: ", channel_type,  "Value: ", data[self.dmx_channel_start+channel_num]
                 self.pwm.setPWM(channel_num, 0, data[self.dmx_channel_start+channel_num]*PCA9685_MAX/DMX_MAX)
-            if channel_type == 'Servo':
+            elif channel_type == 'Servo':
                 if controller.verbose:
                     print "Channel:", channel_num, "Channel Type: ", channel_type,  "Value: ", data[self.dmx_channel_start+channel_num]
                 # position is in 0-255 range
                 # 0degree position = 150; max degree position = 450
                 servo_max_delta = self.servo_max - self.servo_min
                 value = self.servo_min  + data[self.dmx_channel_start+channel_num] * (servo_max_delta / DMX_MAX)
-                if controller.verbose:
-                    print "Channel:", channel_num, "Channel Type: ", channel_type,  "Value: ", value
                 self.pwm.setPWM(channel_num, 0, value)
 
 class RGB_Pixel_Fixture:
@@ -188,23 +207,53 @@ class RGB_Pixel_Fixture:
             self.spidev.write(pixels)
         self.spidev.flush()
 
-class lightingPi:
+class LightingPi:
     def __init__(self):
+        self.osc_server = None
+        self.osc = None
+        self.osc_buffer = bytearray(512)
+        self.raw = None
         self.dmx_universe = None
         self.fixture_list = []
+        self.osc_map_list = []
         self.verbose = False
 
     def data_handler(self, dmx_data):
-        data  = []
         for fixture in self.fixture_list:
             fixture.handler(dmx_data)
 
+    def osc_callback(self, path, args, types, src, map_name):
+        print "got new message '%s' from '%s'" % (path, src.get_url())
+        for a, t in zip(args, types):
+            print "argument of type '%s': %s - User Data: %s" % (t, a, map_name)
 
+        #look up the corresponding osc_map based on the map_name
+        for osc_map in self.osc_map_list:
+            if osc_map.name == map_name:
+                for fixture in self.fixture_list:
+                    if set(range(fixture.dmx_channel_start, fixture.dmx_channel_end)).issuperset(set(osc_map.mapping)):
+                        for i, channel in enumerate(osc_map.mapping):
+                            print "setting channel: %d: Value: %d" % (channel, int(args[i]))
+                            import pdb; pdb.set_trace()
+                            if(osc_map.format[i] == 'f'):
+                                self.osc_buffer[channel] = int(args[i])
+                            else:
+                                self.osc_buffer[channel] = args[i]
+                        fixture.handler(self.osc_buffer)
+
+    def register_osc_callbacks(self):
+         for osc_map in self.osc_map_list:
+            if controller.verbose:
+                print "registering handler for path: %s with format: %s" %(osc_map.osc_path, osc_map.format)
+            self.osc_server.add_method(osc_map.osc_path, osc_map.format, self.osc_callback, osc_map.name)
+         self.osc_server.add_method(None, None, fallback)
+            
     def parseConfigFile(self, configFile):
         config = SafeConfigParser()
         config.read(configFile)
         self.dmx_universe = config.getint('general_config', 'dmx_universe')
         parsed_fixture_list = config.get('general_config', 'fixture_list').split(',')
+        parsed_osc_map_list = config.get('general_config', 'osc_map_list').split(',')
 
         print "General Config: "
         print "Universe: ", self.dmx_universe
@@ -226,27 +275,62 @@ class lightingPi:
                 if new_fixture.mode == 'chase_fill':
                     new_fixture.handler = new_fixture.rgb_pixel_chase_fill_handler
                 new_fixture.calculateGamma()
+                self.fixture_list.append(new_fixture)
             if type == 'pca9685':
                 new_fixture = pca9685(fixture_name)
                 new_fixture.i2c_address = config.get(fixture_name, 'i2c_address')
                 new_fixture.dmx_channel_start = config.getint(fixture_name, 'dmx_channel_start')
                 new_fixture.dmx_channel_end = config.getint(fixture_name, 'dmx_channel_end')
                 new_fixture.num_channels = config.getint(fixture_name, 'num_channels')
+                new_fixture.handler = new_fixture.pca9685_handler
                 for pca9685_channel in range(new_fixture.num_channels):
                     type = config.get(fixture_name, 'channel_%d'%pca9685_channel)
                     new_fixture.channel_config.append(type)
-
-            self.fixture_list.append(new_fixture)
+                self.fixture_list.append(new_fixture)
         print "Configured Fixtures: "
         for fixture in self.fixture_list:
             print fixture
-    
+
+        for map_name in parsed_osc_map_list:
+            type = config.get(map_name, 'type')
+            if type == 'osc_map':
+                new_map = OscMap(map_name)
+                new_map.osc_path = config.get(map_name, 'path')
+                new_map.format = config.get(map_name, 'format')
+                new_map.mapping = map(int, config.get(map_name, 'mapping').split(","))
+                self.osc_map_list.append(new_map)
+        for osc_map in self.osc_map_list:
+            print osc_map
 
     def run(self):
-        wrapper = ClientWrapper()
-        client = wrapper.Client()
-        client.RegisterUniverse(self.dmx_universe, client.REGISTER, self.data_handler)
-        wrapper.Run()
+        if self.raw:
+            print ("Start Raw listener " + self.raw_ip + ":" + str(self.port))
+            sock = socket.socket( socket.AF_INET, # Internet
+                          socket.SOCK_DGRAM ) # UDP
+            sock.bind( (self.raw_ip,self.port) )
+            UDP_BUFFER_SIZE = 4096
+            while True:
+                data, addr = sock.recvfrom( UDP_BUFFER_SIZE ) # blocking call
+                self.data_handler(data)
+
+        elif self.osc:
+            try:
+                self.osc_server = liblo.Server(self.port)
+            except liblo.ServerError, err:
+                print str(err)
+                sys.exit()
+
+            controller.register_osc_callbacks();
+
+            # loop and dispatch messages every 100ms
+            while True:
+                self.osc_server.recv(100)
+     
+        else:
+            wrapper = ClientWrapper()
+            client = wrapper.Client()
+            client.RegisterUniverse(self.dmx_universe, client.REGISTER, self.data_handler)
+            wrapper.Run()
 
 # ==================================================================================================
 # ====================      Argument parsing          ==========================================
@@ -255,11 +339,21 @@ class lightingPi:
 def defineCliArguments(controller):
     parser = argparse.ArgumentParser(add_help=True,version='1.0', prog='pixelpi.py')
     parser.add_argument('--verbose', action='store_true', dest='verbose', default=False, help='enable verbose mode')
+    parser.add_argument('--port', action='store', dest='port', required=False, default=6803, type=int, help='Port to receive raw channel data (does not use OLA')
+    parser.add_argument('--raw', action='store_true', dest='raw', default=False, help='enable raw mode')
+    parser.add_argument('--osc', action='store_true', dest='osc', default=False, help='enable osc mode')
+    parser.add_argument('--raw-ip', action='store', dest='ip', required=False, default='127.0.0.1', help='Used for raw mode, listening address')
+
     args = parser.parse_args()
     controller.verbose = args.verbose
+    controller.raw = args.raw
+    controller.osc = args.osc
+    controller.port = args.port
+    controller.raw_ip = args.ip
+
 
 if __name__ == '__main__':
-    controller = lightingPi()
+    controller = LightingPi()
     controller.parseConfigFile('config.ini')
     defineCliArguments(controller)
     controller.run()
