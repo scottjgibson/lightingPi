@@ -10,7 +10,7 @@ except liblo.AddressError, err:
     sys.exit()
 
 # send message "/foo/message1" with int, float and string arguments
-liblo.send(target, "/lightingPi/xyPad", 1.1, 245.789)
+liblo.send(target, "/lightingPi/xyPad", 128.0, 128.0)
 
 # send message "/foo/message1" with int, float and string arguments
 liblo.send(target, "/lightingPi/knob", 50.1)

@@ -40,10 +40,10 @@ class pca9685:
         self.dmx_channel_start = None
         self.dmx_channel_end = None
         self.handler = self.default_handler
-        self.servo_min = 150  # Min pulse length out of 4096
-        self.servo_max = 600  # Max pulse length out of 4096
+        self.servo_min = 103  # Min pulse length out of 4096 = 20mS
+        self.servo_max = 500  # Max pulse length out of 4096
         self.pwm = PWM(0x40, debug=True)
-        self.pwm.setPWMFreq(60) # Set frequency to 60 Hz
+        self.pwm.setPWMFreq(50) # Set frequency to 60 Hz
     def __str__(self):
         ret = "\nName: %s\n" %  self.name 
         ret += "Type: %s\n" % self.type
@@ -60,10 +60,9 @@ class pca9685:
         print "Data:", data
 
     def pca9685_handler(self,data):
-        print self.name, " Using hardware handler"
-        import pdb; pdb.set_trace()
+        if controller.verbose:
+            print self.name, " Using hardware handler"
         for channel_num, channel_type in enumerate(self.channel_config):
-            print channel_num
             if channel_type == 'Dimmer':
                 if controller.verbose:
                     print "Channel:", channel_num, "Channel Type: ", channel_type,  "Value: ", data[self.dmx_channel_start+channel_num]
@@ -223,9 +222,11 @@ class LightingPi:
             fixture.handler(dmx_data)
 
     def osc_callback(self, path, args, types, src, map_name):
-        print "got new message '%s' from '%s'" % (path, src.get_url())
+        if controller.verbose:
+            print "got new message '%s' from '%s'" % (path, src.get_url())
         for a, t in zip(args, types):
-            print "argument of type '%s': %s - User Data: %s" % (t, a, map_name)
+            if controller.verbose:
+                print "argument of type '%s': %s - User Data: %s" % (t, a, map_name)
 
         #look up the corresponding osc_map based on the map_name
         for osc_map in self.osc_map_list:
@@ -233,8 +234,8 @@ class LightingPi:
                 for fixture in self.fixture_list:
                     if set(range(fixture.dmx_channel_start, fixture.dmx_channel_end)).issuperset(set(osc_map.mapping)):
                         for i, channel in enumerate(osc_map.mapping):
-                            print "setting channel: %d: Value: %d" % (channel, int(args[i]))
-                            import pdb; pdb.set_trace()
+                            if controller.verbose:
+                                print "setting channel: %d: Value: %d" % (channel, int(args[i]))
                             if(osc_map.format[i] == 'f'):
                                 self.osc_buffer[channel] = int(args[i])
                             else:
