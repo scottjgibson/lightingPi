@@ -174,9 +174,15 @@ class RGB_Pixel_Fixture:
         result = bytearray(len(data)* PIXEL_SIZE)
         j = 0
         for i in range(len(data)):
-            result[j] = data[i][0]
-            result[j+1] = data[i][1]
-            result[j+2] = data[i][2]
+            #result[j] = data[i][0]
+            #result[j+1] = data[i][1]
+            #result[j+2] = data[i][2]
+            for k in range(3):
+               try:
+                  result[j+k] = data[i][k]
+               except IndexError:
+                  result[j+k] = 0
+
             j = j + 3
         return result
 
